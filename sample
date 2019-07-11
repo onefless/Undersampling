@@ -1,0 +1,238 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Jun 25 17:16:08 2019
+
+@author: Francis
+"""
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.metrics import confusion_matrix,classification_report
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+#from sklearn.ensemble import AdaBoostClassifier
+from sklearn.model_selection import train_test_split
+
+from scipy.stats import chi2
+#%%
+data = pd.read_csv('Repayment.csv',encoding = 'utf-8',header = 0)
+data.drop(data[data.target==2].index,axis=0,inplace=True)
+cols = list(data.columns)
+cols.remove('target')
+
+cols_nan = data.columns[data.isnull().any()]
+
+#%%
+city_postive=[]
+for i in list(set(data['mob_cty'])):
+    j=data.loc[data['mob_cty']==i,'target'].mean()
+    city_postive.append((i,j))
+city_postive=sorted(city_postive, key=lambda x: x[1])
+# Postive rate == 0.02643
+
+# Define low risk [0,0.021), define medium risk [0.021,0.031), [0.031,]
+cty_low,cty_med,cty_high = [],[],[]
+for cty,rate in city_postive:
+    if rate <0.021:
+        cty_low.append(cty)
+    elif rate>=0.031: 
+        cty_high.append(cty)
+    else:
+        cty_med.append(cty)
+        
+dictionary = {True: 1, False: 0}
+
+WIP = data['mob_cty'].isin(cty_low)
+WIP.replace(dictionary)
+data['cty_low']=WIP
+
+WIP = data['mob_cty'].isin(cty_high)
+WIP.replace(dictionary)
+data['cty_high']=WIP
+
+def kde_plot(col,df):
+    plt.figure(figsize = (13, 7))
+    sns.kdeplot(df.ix[df['target'] == 0, col], label = 'target == 0')
+    sns.kdeplot(df.ix[df['target'] == 1, col], label = 'target == 1')
+    plt.xlabel(col); plt.ylabel('Density'); plt.title('%s Distribution' % col)
+    plt.legend()
+    plt.show()
+    
+kde_plot('cty_high',data)
+
+#%%
+data.drop(['mob_cty','mob_prv'],axis=1,inplace=True)
+data.fillna(0,inplace=True)
+
+cols = list(data.columns)
+cols.remove('target')
+
+#%%
+
+
+Xtr,Xts,Ytr,Yts = train_test_split(data[cols],data['target'],test_size = 0.5, random_state=545)
+from sklearn.ensemble import RandomForestClassifier
+m =RandomForestClassifier(n_estimators=50,criterion='entropy')
+m.fit(pd.get_dummies(Xtr),Ytr)
+features_rf=pd.DataFrame(data=m.feature_importances_,index=cols)
+
+# delete duplicate
+data.drop(['lst_rep_days'],axis=1,inplace=True)
+features_rf.drop('lst_rep_days',axis=0,inplace=True)
+features_selected=features_rf.sort_values(by=0,ascending = False)[:50]
+
+Xtr,Xts,Ytr,Yts = train_test_split(data[features_selected.index],data['target'],test_size = 0.5, random_state=545)
+#%%
+m=LogisticRegression(penalty='l2',n_jobs=-1,class_weight='balanced')
+m.fit(Xtr,Ytr)
+m.score(Xts,Yts)
+
+
+print(roc_auc_score(Yts,m.predict(Xts)))
+print(classification_report(Yts,m.predict(Xts)))
+#[[32167   15612]      [[47760    19]
+# [  431   857]]       [ 1281     7]]
+
+#%% 
+
+
+
+
+    
+
+
+#%%
+    
+import woebin
+
+bins = woebin.woebin(data,'target',cols_nan)
+#from sklearn.model_selection import train_test_split
+#Xtr,Xts,Ytr,Yts = train_test_split(data[cols],data['target'],test_size = 0.5, random_state=545)
+
+data_woe = woebin.woebin_ply(data,bins)
+
+cols_woe = list(data_woe.columns)
+cols_woe.remove('target')
+
+m = LogisticRegression(penalty = 'l2',class_weight='balanced',n_jobs=-1)
+woe_cols = list(data_woe.columns)
+woe_cols.remove('target')
+m.fit(data_woe[woe_cols],data_woe['target'])
+
+import perf2
+train_perf = perf2.perf_eva(data_woe['target'],m.predict(data_woe[woe_cols]))
+print(roc_auc_score(data_woe['target'],m.predict(data_woe[woe_cols])))
+print(m.score(data_woe[woe_cols],data_woe['target']))
+
+cols.remove('mob_cty')
+cols.remove('mob_prv')
+
+
+#col_nan_lst = data.columns[data.isnull().any()]
+
+n=69
+for col in col_nan_lst[69:]:
+    print(n);n+=1
+    bins = woebin(data,'target',col)
+    new_name = col + 'woe'
+    data[new_name]=bins[col]['woe']
+
+data.drop(col_nan_lst,axis=1,inplace=True)
+data.isnull().sum()
+
+
+Xtr_woe,Xts_woe,Ytr_woe,Yts_woe = train_test_split(data_woe[cols_woe],data_woe['target'],test_size = 0.49, random_state=545)
+from sklearn.ensemble import RandomForestClassifier
+m =RandomForestClassifier(n_estimators=50,criterion='entropy')
+m.fit(Xtr_woe,Ytr_woe)
+features_rf=pd.DataFrame(data=m.feature_importances_,index=Xtr_woe.columns)
+features_rf.sort_values(by=0,ascending=False,inplace=True)
+
+m = LogisticRegression(penalty = 'l1',class_weight='balanced',n_jobs=-1)
+m.fit(Xtr_woe[features_rf.index[:15]],Ytr_woe)
+print(roc_auc_score(Yts_woe,m.predict(Xts_woe[features_rf.index[:15]])))
+
+#%% Under-sampling
+def undersampling(df,target,pos_ratio=0.5):
+    
+    n_pos_indice = df[df.target==1].index
+    n_pos = len(n_pos_indice)
+    n_neg_new = int(n_pos/pos_ratio-n_pos)
+    
+    neg_indice = df[df.target==0].index
+    selected = np.concatenate([np.random.choice(neg_indice,size = n_neg_new,replace=False),n_pos_indice])
+    return df.loc[selected]
+
+undersampled_data=undersampling(data_woe,'target',pos_ratio=0.3)
+cols=list(undersampled_data.columns)
+cols.remove('target')
+Xtr,Xts,Ytr,Yts = train_test_split(undersampled_data[cols],undersampled_data['target'],test_size = 0.3, random_state=545)
+
+m = LogisticRegression(penalty = 'l1',class_weight='balanced')
+m.fit(Xtr,Ytr)
+
+predition = m.predict_proba(Xts)[:,1]
+
+#def undersampling_calibrate(pred_proba,pi):
+#    return pred_proba * pi / (pred_proba * pi + 1 - pred_proba)
+
+def undersampling_classify(pred_proba,pi,threshold=0.5):
+    calibrated_proba = pred_proba * pi / (pred_proba * pi + 1 - pred_proba)
+    for index,prob in enumerate(calibrated_proba):
+        if prob >=0.5:
+            calibrated_proba[index]=1
+        else:
+            calibrated_proba[index]=0
+    return calibrated_proba
+
+prediction = undersampling_classify(predition,0.0264)
+
+print(classification_report(Yts,prediction))
+
+#%%
+class undersampling(object):
+    def __init__(self):
+        pass
+    
+    def resample(self,df,target,pos_ratio=0.5):
+        n_pos_indice = df[df.target==1].index
+        n_pos = len(n_pos_indice)
+        n_neg_new = int(n_pos/pos_ratio-n_pos)
+        
+        neg_indice = df[df.target==0].index
+        selected = np.concatenate([np.random.choice(neg_indice,size = n_neg_new,replace=False),n_pos_indice])
+        return df.loc[selected]
+    
+    def undersampling_classify(self,pred_proba,pi,threshold=0.5):
+        '''
+        example input:
+            Only predicted proba of postive class
+        pred_proba = logit.predict_proba(Xts)[:,1]
+        '''
+        calibrated_proba = pred_proba * pi / (pred_proba * pi + 1 - pred_proba)
+        for index,prob in enumerate(calibrated_proba):
+            if prob >=0.5:
+                calibrated_proba[index]=1
+            else:
+                calibrated_proba[index]=0
+        return calibrated_proba
+
+# 例子
+r = undersampling() 
+    
+
+resampled_data = r.resample(data_woe,'target',pos_ratio=0.3) # 重抽样为正样本含量0.3。
+# 根据重新抽样的样本预测
+m.fit(resampled_data[cols_woe],resampled_data['target'])
+predicted_probability= m.predict_proba(Xts_woe)[:,1]
+
+# 调整后验概率并分类
+new_prediction = r.undersampling_classify(predicted_probability,0.0264)
+
+print(roc_auc_score(Yts_woe,new_prediction))
+
+
+m.score(resampled_data[cols_woe],resampled_data['target'])
